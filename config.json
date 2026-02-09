@@ -1,0 +1,18 @@
+{
+  "bucketName": "tfds-ht",
+  "objectKey": "path/to/your/object.zip",
+  "localDir": "./obs_downloads",
+  "pieceSize": 4194304,
+  "maxRetries": 6,
+  "backoffBaseSec": 2.0,
+  "heartbeatIntervalSec": 30.0,
+  "server": "https://obs.cn-north-4.myhuaweicloud.com",
+  "proxy": {
+    "host": "",
+    "port": "",
+    "username": "",
+    "password": ""
+  },
+  "accessKeyId": "",
+  "secretAccessKey": ""
+}
