@@ -1,0 +1,19 @@
+[Unit]
+Description=OBS Download Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=dl
+WorkingDirectory=/data9/obs_tool
+Environment="PATH=/home/dl/miniconda3/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="OBS_DL_CONFIG=/data9/obs_tool/config.json"
+ExecStart=/home/dl/miniconda3/bin/python /data9/obs_tool/linux_server/daemon.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=append:/data9/obs_tool/logs/daemon.log
+StandardError=append:/data9/obs_tool/logs/daemon.log
+
+[Install]
+WantedBy=multi-user.target

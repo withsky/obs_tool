@@ -1,0 +1,6 @@
+{
+  "ssh_host": "10.155.106.xxx",
+  "ssh_user": "dl",
+  "ssh_password": "xxxxxxxx",
+  "linux_path": "/data9/obs_tool/linux_server"
+}

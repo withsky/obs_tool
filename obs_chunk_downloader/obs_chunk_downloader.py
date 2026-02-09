@@ -209,14 +209,28 @@ def main():
     total_parts = (total_size + pieceSize - 1) // pieceSize
     part_paths = [os.path.join(localDir, f"{base_name}.part{idx}") for idx in range(1, total_parts + 1)]
 
-    # 6) 计算从哪一段开始下载（若分片已存在则跳过）
+    # 6) 断点续传：依据实际分片文件大小来判断需要重新下载的分片
     start_index = 1
+    all_exist = True
     for idx, p in enumerate(part_paths, start=1):
-        if not os.path.exists(p):
+        if os.path.exists(p):
+            actual = os.path.getsize(p)
+            expected = min(pieceSize, total_size - (idx - 1) * pieceSize)
+            if actual != expected:
+                # 分片损坏/不完整，删除后从该分片重新下载
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+                start_index = idx
+                all_exist = False
+                break
+        else:
             start_index = idx
+            all_exist = False
             break
-    else:
-        start_index = total_parts + 1  # 所有分片已存在
+    if all_exist:
+        start_index = total_parts + 1  # 所有分片已完整存在
 
     hb = Heartbeat(total_size, localDir, base_name, pieceSize, heartbeatInterval)
     hb.start()

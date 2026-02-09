@@ -1,7 +1,7 @@
 {
   "bucketName": "tfds-ht",
   "objectKey": "path/to/your/object.zip",
-  "localDir": "./obs_downloads",
+  "localDir": "/railway-efs/000-tfds/",
   "pieceSize": 4194304,
   "maxRetries": 6,
   "backoffBaseSec": 2.0,
@@ -14,5 +14,6 @@
     "password": ""
   },
   "accessKeyId": "",
-  "secretAccessKey": ""
+  "secretAccessKey": "",
+  "concurrency": 5
 }
