@@ -51,6 +51,8 @@ def main():
     list_obs = sub.add_parser("list-obs", help="List OBS objects with last_modified")
     list_obs.add_argument("--bucket", required=True, help="OBS bucket name")
     list_obs.add_argument("--prefix", default="", help="OBS prefix to list")
+    list_obs.add_argument("--current-level", action="store_true", 
+                         help="Only list current level (folders and files directly under prefix)")
     
     # sync-folder command
     sync_folder = sub.add_parser("sync-folder", help="Sync OBS folder with optional time filter")
@@ -112,8 +114,15 @@ def main():
         obs = ObsWrapper()
         bucket = getattr(args, 'bucket')
         prefix = getattr(args, 'prefix', '')
-        objs = obs.list_objects(bucket, prefix)
-        print(json.dumps(objs))
+        
+        if getattr(args, 'current_level', False):
+            # 只返回当前层级
+            result = obs.list_current_level(bucket, prefix)
+            print(json.dumps(result))
+        else:
+            # 返回所有层级（原有逻辑）
+            objs = obs.list_objects(bucket, prefix)
+            print(json.dumps(objs))
         sys.exit(0)
     
     if args.cmd == "sync-folder":

@@ -55,9 +55,16 @@ class ObsWrapper:
             pass
         return None  # type: ignore
 
-    def list_objects(self, bucket: str, prefix: str = "") -> List[dict]:
+    def list_objects(self, bucket: str, prefix: str = "", only_current_level: bool = True) -> List[dict]:
+        """
+        列出OBS对象
+        
+        Args:
+            bucket: OBS桶名
+            prefix: 前缀路径
+            only_current_level: 如果为True，只返回当前层级的文件和文件夹
+        """
         if self.client is None:
-            # 尝试从配置文件加载凭据
             try:
                 config_path = "/data9/obs_tool/config.json"
                 if os.path.exists(config_path):
@@ -69,32 +76,29 @@ class ObsWrapper:
                     server = config.get('server', 'https://obs.cn-north-4.myhuaweicloud.com')
                     
                     if ak and sk:
-                        # 重新初始化客户端
                         self.client = ObsClient(
                             access_key_id=ak,
                             secret_access_key=sk,
                             server=server
                         )
                     else:
-                        # AK/SK 未配置，返回空列表并记录警告
                         return []
             except Exception:
                 pass
         
         if self.client is None:
-            # OBS 客户端仍然不可用
             return []
-            # 返回空列表而不是抛出异常
-            return []
+        
         try:
             resp = self.client.listObjects(bucket, prefix=prefix)  # type: ignore
             objs = []
             contents = getattr(resp, 'contents', []) or []
+            
             for obj in contents:
                 key = getattr(obj, 'key', None) or getattr(obj, 'name', None)
                 size = getattr(obj, 'size', None)
                 
-                # Try to extract last_modified with multiple possible attribute names
+                # 提取 last_modified
                 lm = None
                 for attr in ('lastModified', 'LastModified', 'last_modified', 'mtime'):
                     if hasattr(obj, attr):
@@ -111,38 +115,96 @@ class ObsWrapper:
                 if lm is None:
                     lm = 0
                 
-                # 计算目录结构信息
-                depth = 0
-                parent_dir = ""
-                is_in_folder = False
-                
-                if key:
-                    # 计算层级深度
+                if only_current_level:
+                    # 只返回当前层级
+                    # 计算相对于prefix的路径
+                    relative_path = key[len(prefix):] if key.startswith(prefix) else key
+                    if relative_path.startswith('/'):
+                        relative_path = relative_path[1:]
+                    
+                    parts = relative_path.split('/')
+                    
+                    if len(parts) == 1:
+                        # 直接在当前目录下
+                        objs.append({
+                            "key": key,
+                            "size": size,
+                            "last_modified": lm,
+                            "is_folder": key.endswith('/') if len(parts) == 1 else False
+                        })
+                    # else: 子目录中的文件，不返回
+                else:
+                    # 返回所有层级（原有逻辑）
                     key_without_prefix = key[len(prefix):] if key.startswith(prefix) else key
                     if key_without_prefix.startswith('/'):
                         key_without_prefix = key_without_prefix[1:]
                     
                     parts = key_without_prefix.split('/')
-                    depth = len(parts) - 1  # 减1是因为最后一个是文件名
+                    depth = len(parts) - 1
                     
-                    if depth > 0:
-                        is_in_folder = True
-                        parent_dir = '/'.join(parts[:-1])
-                    else:
-                        is_in_folder = False
-                        parent_dir = ""
-                
-                objs.append({
-                    "key": key, 
-                    "size": size, 
-                    "last_modified": lm,
-                    "depth": depth,
-                    "parent_dir": parent_dir,
-                    "is_in_folder": is_in_folder
-                })
+                    parent_dir = '/'.join(parts[:-1]) if depth > 0 else ""
+                    
+                    objs.append({
+                        "key": key,
+                        "size": size,
+                        "last_modified": lm,
+                        "depth": depth,
+                        "parent_dir": parent_dir,
+                        "is_in_folder": depth > 0
+                    })
+            
             return objs
         except Exception:
             return []
+    
+    def list_current_level(self, bucket: str, prefix: str = "") -> List[dict]:
+        """
+        只列出当前层级的文件和文件夹
+        返回格式: {"folders": [...], "files": [...]}
+        """
+        # 规范化prefix
+        if prefix and not prefix.endswith('/'):
+            prefix = prefix + '/'
+        
+        all_objects = self.list_objects(bucket, prefix, only_current_level=True)
+        
+        folders = []
+        files = []
+        
+        for obj in all_objects:
+            key = obj.get('key', '')
+            if key.endswith('/'):
+                # 文件夹
+                folder_name = key.rstrip('/').split('/')[-1]
+                folders.append({
+                    "key": key.rstrip('/'),
+                    "name": folder_name,
+                    "last_modified": obj.get('last_modified', 0)
+                })
+            else:
+                # 文件
+                file_name = key.split('/')[-1]
+                files.append({
+                    "key": key,
+                    "name": file_name,
+                    "size": obj.get('size', 0),
+                    "last_modified": obj.get('last_modified', 0)
+                })
+        
+        # 按名称排序
+        folders.sort(key=lambda x: x['name'])
+        files.sort(key=lambda x: x['name'])
+        
+        return {"folders": folders, "files": files}
+    
+    def get_parent_path(self, path: str) -> str:
+        """获取父路径"""
+        if not path:
+            return ""
+        parts = path.rstrip('/').split('/')
+        if len(parts) == 1:
+            return ""
+        return '/'.join(parts[:-1])
 
     def get_directory_tree(self, bucket: str, prefix: str = "") -> dict:
         """获取目录树结构，便于Windows端展示"""

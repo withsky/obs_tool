@@ -5,6 +5,7 @@ Windows客户端 - OBS下载工具
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
+from tkinter.simpledialog import askstring
 from tkinter.font import Font
 import json
 from datetime import datetime
@@ -190,6 +191,7 @@ class FileItem(tk.Frame):
         self.selected = selected
         self.on_click = on_click
         self.on_double_click = on_double_click
+        self.file_info = {}
         
         # 图标
         icon = ICONS['folder'] if is_folder else self.get_file_icon(name)
@@ -284,25 +286,25 @@ class FileItem(tk.Frame):
                     grandchild.configure(bg=bg_color)
 
 class FileBrowserDialog:
-    """文件浏览器对话框 - 网盘风格"""
+    """文件浏览器对话框 - 带地址栏导航"""
     def __init__(self, parent, ssh_client, config):
         self.parent = parent
         self.ssh = ssh_client
         self.config = config
-        self.selected_files = []
         self.current_path = ""
-        self.files_data = []
+        self.history = []
+        self.folders = []
+        self.files = []
+        self.selected_files = []
         
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("OBS文件浏览器")
         self.dialog.geometry("1200x800")
         self.dialog.configure(bg='#f0f2f5')
-        
-        # 设置窗口最小尺寸
         self.dialog.minsize(1000, 600)
         
         self.create_ui()
-        self.load_files()
+        self.load_current_level("")
     
     def create_ui(self):
         """创建界面"""
@@ -324,20 +326,39 @@ class FileBrowserDialog:
         btn_frame = tk.Frame(toolbar, bg='white')
         btn_frame.pack(side=tk.RIGHT, padx=20, pady=10)
         
+        self.back_btn = SecondaryButton(btn_frame, icon='◀', text='返回',
+                                        command=self.go_back, state='disabled')
+        self.back_btn.pack(side=tk.LEFT, padx=5)
+        
         self.refresh_btn = SecondaryButton(btn_frame, icon='🔄', text='刷新', 
-                                          command=self.load_files)
+                                          command=self.refresh_current)
         self.refresh_btn.pack(side=tk.LEFT, padx=5)
         
-        # 面包屑导航栏
-        breadcrumb_frame = tk.Frame(self.dialog, bg='#f0f2f5', height=40)
-        breadcrumb_frame.pack(fill=tk.X, padx=20, pady=10)
-        breadcrumb_frame.pack_propagate(False)
+        # 地址栏区域
+        address_frame = tk.Frame(self.dialog, bg='#fafafa', height=50)
+        address_frame.pack(fill=tk.X, padx=20, pady=10)
+        address_frame.pack_propagate(False)
         
-        self.breadcrumb_label = tk.Label(breadcrumb_frame, text="全部文件", 
-                                        font=('微软雅黑', 11), bg='#f0f2f5', 
-                                        fg='#333333', cursor='hand2')
-        self.breadcrumb_label.pack(side=tk.LEFT)
-        self.breadcrumb_label.bind('<Button-1>', lambda e: self.go_home())
+        tk.Label(address_frame, text="📂 位置:", font=('微软雅黑', 11),
+                bg='#fafafa', fg='#666666').pack(side=tk.LEFT, padx=10)
+        
+        # 地址栏（可编辑）
+        self.address_var = tk.StringVar(value="根目录")
+        self.address_entry = tk.Entry(address_frame, textvariable=self.address_var,
+                                      font=('微软雅黑', 11), width=60,
+                                      relief='solid', bd=1)
+        self.address_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.address_entry.bind('<Return>', self.on_address_enter)
+        
+        # 转到按钮
+        IconButton(address_frame, icon='▶', text='转到',
+                  command=self.navigate_to_address).pack(side=tk.LEFT, padx=5)
+        
+        # 面包屑导航
+        self.breadcrumb_frame = tk.Frame(self.dialog, bg='#f0f2f5', height=35)
+        self.breadcrumb_frame.pack(fill=tk.X, padx=20)
+        self.breadcrumb_frame.pack_propagate(False)
+        self.update_breadcrumb()
         
         # 主内容区
         content_frame = tk.Frame(self.dialog, bg='#f0f2f5')
@@ -354,9 +375,9 @@ class FileBrowserDialog:
         
         # 导航项
         nav_items = [
-            ('📁', '全部文件', self.go_home),
-            ('⏰', '最近更新', self.show_recent),
-            ('📦', '大文件', self.show_large_files),
+            ('📁', '全部文件', lambda: self.load_current_level("")),
+            ('⏰', '最近更新', lambda: messagebox.showinfo("提示", "最近更新功能需要在服务器端支持")),
+            ('📦', '大文件', lambda: messagebox.showinfo("提示", "大文件功能需要在服务器端支持")),
         ]
         
         for icon, text, cmd in nav_items:
@@ -438,7 +459,7 @@ class FileBrowserDialog:
         self.download_btn.config(state='disabled')
         
         self.sync_btn = IconButton(btn_frame, icon='☁️', text='同步文件夹',
-                                  command=self.sync_folder)
+                                  command=self.sync_folder_from_dialog)
         self.sync_btn.pack(side=tk.LEFT, padx=5)
         
         SecondaryButton(btn_frame, icon='✕', text='关闭',
@@ -460,7 +481,7 @@ class FileBrowserDialog:
         self.search_entry = tk.Entry(search_frame, font=('微软雅黑', 10),
                                     bg='#f5f5f5', relief='flat', bd=0)
         self.search_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
-        self.search_entry.bind('<KeyRelease>', self.on_search)
+        self.search_entry.bind('<KeyRelease>', self.on_search_keyrelease)
         
         # 时间过滤
         time_frame = tk.Frame(filter_frame, bg='white')
@@ -507,12 +528,16 @@ class FileBrowserDialog:
             pass
     
     def load_files(self):
-        """加载文件列表"""
+        """兼容旧方法，直接加载根目录"""
+        self.load_current_level("")
+    
+    def load_current_level(self, path):
+        """加载当前层级的文件和文件夹（使用--current-level）"""
         try:
             self.refresh_btn.config(text='🔄 加载中...', state='disabled')
             self.dialog.update()
             
-            cmd = f"python {self.config.get('linux_path')}/cli.py list-obs --bucket tfds-ht --prefix ''"
+            cmd = f"python {self.config.get('linux_path')}/cli.py list-obs --bucket tfds-ht --prefix '{path}' --current-level"
             out, err = self.ssh.exec(cmd)
             
             if err:
@@ -520,110 +545,74 @@ class FileBrowserDialog:
                 return
             
             try:
-                self.files_data = json.loads(out)
+                data = json.loads(out)
+                self.folders = data.get('folders', [])
+                self.files = data.get('files', [])
             except json.JSONDecodeError:
-                self.files_data = []
+                self.folders = []
+                self.files = []
             
-            # 如果文件列表为空，显示提示
-            if not self.files_data:
-                self.display_no_files_hint()
-            else:
-                self.display_files(self.files_data)
+            # 更新界面
+            self.current_path = path
+            self.address_var.set(path if path else "根目录")
+            self.update_breadcrumb()
+            self.display_current_level()
+            self.update_back_button()
             
         except Exception as e:
             messagebox.showerror("错误", f"加载失败: {str(e)}")
         finally:
             self.refresh_btn.config(text='🔄 刷新', state='normal')
     
-    def display_no_files_hint(self):
-        """显示空列表提示（包含帮助信息）"""
-        for widget in self.files_frame.winfo_children():
-            widget.destroy()
-        
-        self.file_items = []
-        
-        empty_frame = tk.Frame(self.files_frame, bg='white')
-        empty_frame.pack(fill=tk.BOTH, expand=True, pady=50)
-        
-        tk.Label(empty_frame, text="☁️", font=('Segoe UI Emoji', 48),
-                bg='white', fg='#d9d9d9').pack()
-        tk.Label(empty_frame, text="无法获取OBS文件列表", 
-                font=('微软雅黑', 14, 'bold'), bg='white', fg='#ff4d4f').pack(pady=(10, 5))
-        tk.Label(empty_frame, text="请检查服务器配置：", 
-                font=('微软雅黑', 11), bg='white', fg='#666666').pack()
-        
-        help_frame = tk.Frame(empty_frame, bg='#fafafa', padx=20, pady=10)
-        help_frame.pack(pady=10)
-        
-        help_text = """1. 确认 config.json 中已配置 AK/SK
-2. 确认已安装 obs-python-sdk:
-   pip install obs-python-sdk
-3. 检查服务器能否访问 OBS 服务"""
-        
-        tk.Label(help_frame, text=help_text, font=('微软雅黑', 10),
-                bg='#fafafa', fg='#666666', justify='left').pack()
-        
-        tk.Label(empty_frame, text="如需帮助，请联系系统管理员", 
-                font=('微软雅黑', 10), bg='white', fg='#999999').pack(pady=10)
-    
-    def display_files(self, files):
-        """显示文件列表"""
+    def display_current_level(self):
+        """显示当前层级的文件和文件夹"""
         # 清空现有列表
         for widget in self.files_frame.winfo_children():
             widget.destroy()
         
         self.file_items = []
         
-        if not files:
-            # 显示空状态
+        # 显示文件夹
+        for folder in self.folders:
+            self.create_folder_item(folder)
+        
+        # 显示文件
+        for file_info in self.files:
+            self.create_file_item(file_info)
+        
+        # 空状态
+        if not self.folders and not self.files:
             empty_frame = tk.Frame(self.files_frame, bg='white')
             empty_frame.pack(fill=tk.BOTH, expand=True, pady=100)
             
             tk.Label(empty_frame, text="📂", font=('Segoe UI Emoji', 64),
                     bg='white', fg='#d9d9d9').pack()
-            tk.Label(empty_frame, text="暂无文件", font=('微软雅黑', 14),
+            tk.Label(empty_frame, text="此文件夹为空", font=('微软雅黑', 14),
                     bg='white', fg='#999999').pack(pady=10)
-            return
+    
+    def create_folder_item(self, folder):
+        """创建文件夹项"""
+        name = folder.get('name', '')
+        key = folder.get('key', '')
+        modified = self.format_time(folder.get('last_modified', 0))
         
-        # 按文件夹分组排序
-        folders = [f for f in files if f.get('is_in_folder', False)]
-        root_files = [f for f in files if not f.get('is_in_folder', False)]
-        
-        # 显示根目录文件
-        for file_info in root_files:
-            self.create_file_item(file_info)
-        
-        # 显示文件夹
-        displayed_folders = set()
-        for folder in folders:
-            parent_dir = folder.get('parent_dir', '')
-            if parent_dir and parent_dir not in displayed_folders:
-                displayed_folders.add(parent_dir)
-                # 创建文件夹项
-                folder_info = {
-                    'key': parent_dir + '/',
-                    'name': parent_dir.split('/')[-1] or parent_dir,
-                    'size': '',
-                    'last_modified': max([
-                        f.get('last_modified', 0) 
-                        for f in folders 
-                        if f.get('parent_dir') == parent_dir
-                    ]) if folders else 0,
-                    'is_folder': True
-                }
-                self.create_file_item(folder_info)
+        item = FileItem(
+            self.files_frame,
+            name=name,
+            size="",
+            modified=modified,
+            is_folder=True,
+            on_click=self.on_folder_click,
+            on_double_click=self.on_folder_double_click
+        )
+        item.pack(fill=tk.X, padx=5, pady=2)
+        item.file_info = {'key': key, 'is_folder': True, 'name': name}
+        self.file_items.append(item)
     
     def create_file_item(self, file_info):
         """创建文件项"""
-        is_folder = file_info.get('is_folder', False)
-        
-        if is_folder:
-            name = file_info.get('name', '')
-            size = f"{sum(1 for f in self.files_data if f.get('parent_dir') == file_info['key'].rstrip('/'))} 个项目"
-        else:
-            name = file_info.get('key', '').split('/')[-1]
-            size = self.format_size(file_info.get('size', 0))
-        
+        name = file_info.get('name', '')
+        size = self.format_size(file_info.get('size', 0))
         modified = self.format_time(file_info.get('last_modified', 0))
         
         item = FileItem(
@@ -631,155 +620,13 @@ class FileBrowserDialog:
             name=name,
             size=size,
             modified=modified,
-            is_folder=is_folder,
+            is_folder=False,
             on_click=self.on_file_click,
             on_double_click=self.on_file_double_click
         )
         item.pack(fill=tk.X, padx=5, pady=2)
         item.file_info = file_info
         self.file_items.append(item)
-    
-    def on_file_click(self, item):
-        """文件点击事件"""
-        # 清除其他选中状态
-        for fi in self.file_items:
-            fi.set_selected(False)
-        
-        # 设置当前选中
-        item.set_selected(True)
-        self.selected_files = [item.file_info]
-        
-        # 更新选中信息
-        name = item.file_info.get('key', '').split('/')[-1]
-        self.selection_label.config(text=f"已选择: {name}")
-        self.download_btn.config(state='normal')
-    
-    def on_file_double_click(self, item):
-        """文件双击事件"""
-        if item.file_info.get('is_folder'):
-            # 进入文件夹
-            self.enter_folder(item.file_info)
-        else:
-            # 直接下载
-            self.download_selected()
-    
-    def enter_folder(self, folder_info):
-        """进入文件夹"""
-        folder_path = folder_info.get('key', '').rstrip('/')
-        self.current_path = folder_path
-        
-        # 更新面包屑
-        self.breadcrumb_label.config(text=f"全部文件 > {folder_path}")
-        
-        # 过滤显示该文件夹下的文件
-        folder_files = [
-            f for f in self.files_data 
-            if f.get('parent_dir') == folder_path
-        ]
-        self.display_files(folder_files)
-    
-    def go_home(self):
-        """返回根目录"""
-        self.current_path = ""
-        self.breadcrumb_label.config(text="全部文件")
-        self.load_files()
-    
-    def show_recent(self):
-        """显示最近更新的文件"""
-        recent_files = sorted(
-            self.files_data,
-            key=lambda x: x.get('last_modified', 0),
-            reverse=True
-        )[:20]  # 最近20个
-        self.display_files(recent_files)
-        self.breadcrumb_label.config(text="全部文件 > 最近更新")
-    
-    def show_large_files(self):
-        """显示大文件"""
-        large_files = sorted(
-            self.files_data,
-            key=lambda x: x.get('size', 0),
-            reverse=True
-        )[:20]  # 最大的20个
-        self.display_files(large_files)
-        self.breadcrumb_label.config(text="全部文件 > 大文件")
-    
-    def on_search(self, event):
-        """搜索文件"""
-        keyword = self.search_entry.get().lower()
-        if not keyword:
-            self.display_files(self.files_data)
-            return
-        
-        filtered = [
-            f for f in self.files_data 
-            if keyword in f.get('key', '').lower()
-        ]
-        self.display_files(filtered)
-    
-    def apply_time_filter(self):
-        """应用时间过滤"""
-        date_str = self.time_var.get()
-        if not date_str:
-            self.display_files(self.files_data)
-            return
-        
-        try:
-            filter_date = datetime.strptime(date_str, '%Y-%m-%d')
-            filter_ts = int(filter_date.timestamp())
-            
-            filtered = [
-                f for f in self.files_data 
-                if f.get('last_modified', 0) > filter_ts
-            ]
-            self.display_files(filtered)
-            
-        except ValueError:
-            messagebox.showerror("错误", "日期格式应为: YYYY-MM-DD")
-    
-    def download_selected(self):
-        """下载选中的文件"""
-        if not self.selected_files:
-            return
-        
-        file_info = self.selected_files[0]
-        key = file_info.get('key', '')
-        
-        # 询问下载位置
-        target = messagebox.askstring(
-            "确认下载",
-            f"文件: {key}\n\n请输入下载到Linux服务器的目标路径:",
-            initialvalue=self.config.get('download_path', '/railway-efs/000-tfds/')
-        )
-        
-        if target:
-            self.parent.start_download(key, target)
-            self.dialog.destroy()
-    
-    def sync_folder(self):
-        """同步文件夹"""
-        if not self.selected_files:
-            messagebox.showwarning("提示", "请先选择一个文件夹")
-            return
-        
-        file_info = self.selected_files[0]
-        if not file_info.get('is_folder'):
-            messagebox.showwarning("提示", "请选择一个文件夹而不是文件")
-            return
-        
-        folder_path = file_info.get('key', '').rstrip('/')
-        
-        # 询问是否应用时间过滤
-        date_str = self.time_var.get()
-        if date_str:
-            msg = f"将同步文件夹: {folder_path}\n只下载 {date_str} 之后的文件\n\n是否继续？"
-        else:
-            msg = f"将同步文件夹: {folder_path}\n下载所有文件\n\n是否继续？"
-        
-        if messagebox.askyesno("确认同步", msg):
-            target = self.config.get('download_path', '/railway-efs/000-tfds/')
-            self.parent.sync_folder(folder_path, target, date_str)
-            self.dialog.destroy()
     
     def format_size(self, size):
         """格式化文件大小"""
@@ -801,58 +648,218 @@ class FileBrowserDialog:
             return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M')
         except:
             return str(timestamp)
+    
+    def on_search_keyrelease(self, event):
+        """搜索框按键释放事件"""
+        pass
+    
+    def update_breadcrumb(self):
+        """更新面包屑导航"""
+        for widget in self.breadcrumb_frame.winfo_children():
+            widget.destroy()
+        
+        path_parts = []
+        if self.current_path:
+            parts = self.current_path.split('/')
+            for i, part in enumerate(parts):
+                if part:
+                    path_parts.append(('/'.join(parts[:i+1]), part))
+        
+        path_parts.insert(0, ("", "根目录"))
+        
+        for i, (path, name) in enumerate(path_parts):
+            if i > 0:
+                tk.Label(self.breadcrumb_frame, text=" › ", 
+                        font=('微软雅黑', 12), bg='#f0f2f5', fg='#999999').pack(side=tk.LEFT)
+            
+            if path == self.current_path:
+                tk.Label(self.breadcrumb_frame, text=name, 
+                        font=('微软雅黑', 12, 'bold'), bg='#f0f2f5', 
+                        fg='#1890ff').pack(side=tk.LEFT)
+            else:
+                btn = tk.Button(self.breadcrumb_frame, text=name,
+                               font=('微软雅黑', 12),
+                               bg='#f0f2f5', fg='#333333',
+                               relief='flat', cursor='hand2',
+                               command=lambda p=path: self.navigate_to(p))
+                btn.pack(side=tk.LEFT)
+    
+    def update_back_button(self):
+        """更新返回按钮状态"""
+        if self.history:
+            self.back_btn.config(state='normal')
+        else:
+            self.back_btn.config(state='disabled')
+    
+    def navigate_to(self, path):
+        """导航到指定路径"""
+        if path == self.current_path:
+            return
+        
+        if self.current_path:
+            self.history.append(self.current_path)
+        
+        self.load_current_level(path)
+    
+    def navigate_to_address(self):
+        """根据地址栏输入导航"""
+        path = self.address_var.get().strip()
+        if path == "根目录":
+            path = ""
+        
+        if path and not path.startswith('/'):
+            path = '/' + path
+        
+        self.navigate_to(path)
+    
+    def on_address_enter(self, event):
+        """地址栏回车导航"""
+        self.navigate_to_address()
+    
+    def go_back(self):
+        """返回上一级"""
+        if self.history:
+            path = self.history.pop()
+            self.load_current_level(path)
+    
+    def refresh_current(self):
+        """刷新当前目录"""
+        self.load_current_level(self.current_path)
+    
+    def on_folder_click(self, item):
+        """文件夹点击"""
+        self.selected_files = [item.file_info]
+        name = item.file_info.get('name', '')
+        self.selection_label.config(text=f"已选择文件夹: {name}")
+        self.download_btn.config(state='disabled')
+        self.sync_btn.config(state='normal')
+    
+    def on_folder_double_click(self, item):
+        """文件夹双击 - 进入文件夹"""
+        key = item.file_info.get('key', '')
+        self.navigate_to(key)
+    
+    def on_file_click(self, item):
+        """文件点击"""
+        self.selected_files = [item.file_info]
+        name = item.file_info.get('name', '')
+        self.selection_label.config(text=f"已选择: {name}")
+        self.download_btn.config(state='normal')
+        self.sync_btn.config(state='disabled')
+    
+    def on_file_double_click(self, item):
+        """文件双击 - 直接下载"""
+        self.download_selected()
+    
+    def download_selected(self):
+        """下载选中的文件"""
+        if not self.selected_files:
+            return
+        
+        file_info = self.selected_files[0]
+        key = file_info.get('key', '')
+        
+        target = askstring(
+            "确认下载",
+            f"文件: {key}\n\n请输入下载到Linux服务器的目标路径:",
+            initialvalue=self.config.get('download_path', '/railway-efs/000-tfds/')
+        )
+        
+        if target:
+            self.parent.start_download(key, target)
+            self.dialog.destroy()
+    
+    def apply_time_filter(self):
+        """应用时间过滤"""
+        date_str = self.time_var.get()
+        if date_str:
+            try:
+                datetime.strptime(date_str, '%Y-%m-%d')
+                self.load_current_level(self.current_path)
+            except ValueError:
+                messagebox.showwarning("警告", "日期格式无效，请使用 YYYY-MM-DD 格式")
+        else:
+            self.load_current_level(self.current_path)
+    
+    def sync_folder_from_dialog(self):
+        """从对话框同步文件夹"""
+        if not self.selected_files:
+            messagebox.showwarning("提示", "请先选择一个文件夹")
+            return
+        
+        file_info = self.selected_files[0]
+        if not file_info.get('is_folder'):
+            messagebox.showwarning("提示", "请选择一个文件夹而不是文件")
+            return
+        
+        folder_path = file_info.get('key', '').rstrip('/')
+        
+        date_str = self.time_var.get()
+        if date_str:
+            msg = f"将同步文件夹: {folder_path}\n只下载 {date_str} 之后的文件\n\n是否继续？"
+        else:
+            msg = f"将同步文件夹: {folder_path}\n下载所有文件\n\n是否继续？"
+        
+        if messagebox.askyesno("确认同步", msg):
+            target = self.config.get('download_path', '/railway-efs/000-tfds/')
+            self.parent.sync_folder(folder_path, target, date_str)
+            self.dialog.destroy()
+    
+    def start_download(self, object_key, target_dir):
+        """开始下载"""
+        try:
+            cmd = (f"python /data9/obs_tool/linux_server/cli.py download "
+                  f"--object_key '{object_key}' --target_dir '{target_dir}' "
+                  f"--created_by 'windows_user'")
+            out, err = self.ssh.exec(cmd)
+            
+            if err:
+                messagebox.showerror("错误", f"启动下载失败:\n{err}")
+            else:
+                result = json.loads(out)
+                task_id = result.get('task_id')
+                messagebox.showinfo("成功", f"✅ 任务已创建\n任务ID: {task_id}")
+                self.parent.refresh_tasks()
+                
+        except Exception as e:
+            messagebox.showerror("错误", f"操作失败: {str(e)}")
+    
 
 class MainApplication:
-    """主应用程序 - 现代化界面"""
+    """主应用程序"""
     def __init__(self, master):
         self.master = master
         master.title("OBS下载工具")
         master.geometry("1400x900")
         master.configure(bg='#f0f2f5')
-        
-        # 设置最小尺寸
         master.minsize(1200, 700)
         
-        # 加载配置
         self.config = load_config()
         
-        # 初始化SSH客户端
         self.ssh = SSHClient(
             self.config["ssh_host"],
             self.config["ssh_user"],
             self.config["ssh_password"]
         )
         
-        # 测试连接
         self.test_connection()
-        
-        # 创建界面
         self.create_ui()
-        
-        # 启动状态轮询
         self.start_polling()
     
     def test_connection(self):
         """测试服务器连接"""
         try:
             self.ssh.connect()
-            messagebox.showinfo("连接成功", f"成功连接到服务器 {self.config['ssh_host']}")
         except Exception as e:
             messagebox.showerror("连接失败", 
-                f"无法连接到服务器:\n{str(e)}\n\n"
-                f"请检查:\n1. 网络连接是否正常\n"
-                f"2. 服务器地址、用户名、密码是否正确\n"
-                f"3. 配置文件: {CONFIG_PATH}")
-            self.master.quit()
+                f"无法连接到服务器:\n{str(e)}")
     
     def create_ui(self):
         """创建主界面"""
-        # 顶部导航栏
         header = tk.Frame(self.master, bg='white', height=60)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
         
-        # Logo
         logo_frame = tk.Frame(header, bg='white')
         logo_frame.pack(side=tk.LEFT, padx=20, pady=10)
         
@@ -861,7 +868,6 @@ class MainApplication:
         tk.Label(logo_frame, text="OBS下载工具", font=('微软雅黑', 18, 'bold'),
                 bg='white', fg='#1890ff').pack(side=tk.LEFT, padx=10)
         
-        # 顶部操作按钮
         btn_frame = tk.Frame(header, bg='white')
         btn_frame.pack(side=tk.RIGHT, padx=20, pady=12)
         
@@ -870,23 +876,18 @@ class MainApplication:
         IconButton(btn_frame, icon='📥', text='新建下载',
                   command=self.show_download_dialog).pack(side=tk.LEFT, padx=5)
         
-        # 主内容区
         content = tk.Frame(self.master, bg='#f0f2f5')
         content.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
-        # 左侧统计面板
         left_panel = tk.Frame(content, bg='white', width=280)
         left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 20))
         left_panel.pack_propagate(False)
         
-        # 统计卡片
         self.create_stats_cards(left_panel)
         
-        # 右侧任务列表
         right_panel = tk.Frame(content, bg='white')
         right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # 任务列表标题
         list_header = tk.Frame(right_panel, bg='white', height=50)
         list_header.pack(fill=tk.X, padx=20, pady=10)
         list_header.pack_propagate(False)
@@ -894,16 +895,13 @@ class MainApplication:
         tk.Label(list_header, text="下载任务", font=('微软雅黑', 16, 'bold'),
                 bg='white', fg='#333333').pack(side=tk.LEFT)
         
-        # 刷新按钮
         SecondaryButton(list_header, icon='🔄', text='刷新',
                        command=self.refresh_tasks).pack(side=tk.RIGHT)
         
-        # 任务列表
         self.create_task_list(right_panel)
         
-        # 底部状态栏
         self.status_bar = tk.Label(self.master, 
-                                  text=f"✓ 已连接到 {self.config['ssh_host']}  |  就绪",
+                                  text=f"已连接到 {self.config['ssh_host']}  |  就绪",
                                   font=('微软雅黑', 10),
                                   bg='#fafafa', fg='#666666',
                                   relief='flat', anchor='w', padx=20, pady=8)
@@ -911,25 +909,25 @@ class MainApplication:
     
     def create_stats_cards(self, parent):
         """创建统计卡片"""
-        # 标题
         tk.Label(parent, text="📊 统计概览", font=('微软雅黑', 14, 'bold'),
                 bg='white', fg='#333333').pack(anchor='w', padx=20, pady=20)
         
-        # 运行中任务
+        self.stat_labels = {}
         self.running_card = self.create_stat_card(parent, "▶️ 运行中", "0", "#1890ff")
         self.running_card.pack(fill=tk.X, padx=20, pady=10)
+        self.stat_labels['running'] = self.running_card
         
-        # 待处理任务
         self.pending_card = self.create_stat_card(parent, "⏳ 待处理", "0", "#faad14")
         self.pending_card.pack(fill=tk.X, padx=20, pady=10)
+        self.stat_labels['pending'] = self.pending_card
         
-        # 已完成任务
         self.completed_card = self.create_stat_card(parent, "✅ 已完成", "0", "#52c41a")
         self.completed_card.pack(fill=tk.X, padx=20, pady=10)
+        self.stat_labels['completed'] = self.completed_card
         
-        # 下载速度
         self.speed_card = self.create_stat_card(parent, "⚡ 当前速度", "0 MB/s", "#722ed1")
         self.speed_card.pack(fill=tk.X, padx=20, pady=10)
+        self.stat_labels['speed'] = self.speed_card
     
     def create_stat_card(self, parent, title, value, color):
         """创建单个统计卡片"""
@@ -946,16 +944,13 @@ class MainApplication:
                               bg='#f6ffed', fg=color)
         value_label.pack(anchor='w', pady=(5, 0))
         
-        card.value_label = value_label
         return card
     
     def create_task_list(self, parent):
         """创建任务列表"""
-        # 列表容器
         list_frame = tk.Frame(parent, bg='white')
         list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
-        # 表头
         header = tk.Frame(list_frame, bg='#fafafa', height=40)
         header.pack(fill=tk.X)
         header.pack_propagate(False)
@@ -975,7 +970,6 @@ class MainApplication:
                     bg='#fafafa', fg='#666666').place(x=x, y=10)
             x += width
         
-        # 任务列表Canvas
         self.task_canvas = tk.Canvas(list_frame, bg='white', highlightthickness=0)
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical",
                                  command=self.task_canvas.yview)
@@ -1006,15 +1000,12 @@ class MainApplication:
         dialog.transient(self.master)
         dialog.grab_set()
         
-        # 标题
         tk.Label(dialog, text="📥 新建下载任务", font=('微软雅黑', 16, 'bold'),
                 bg='white', fg='#333333').pack(pady=20)
         
-        # 表单
         form_frame = tk.Frame(dialog, bg='white', padx=40)
         form_frame.pack(fill=tk.X, pady=10)
         
-        # OBS路径
         tk.Label(form_frame, text="OBS文件路径:", font=('微软雅黑', 11),
                 bg='white', fg='#333333').pack(anchor='w', pady=(10, 5))
         
@@ -1028,7 +1019,6 @@ class MainApplication:
         IconButton(path_frame, icon='📋', text='粘贴',
                   command=lambda: self.paste_clipboard(entry_path)).pack(side=tk.LEFT, padx=5)
         
-        # 目标路径
         tk.Label(form_frame, text="下载到:", font=('微软雅黑', 11),
                 bg='white', fg='#333333').pack(anchor='w', pady=(15, 5))
         
@@ -1037,18 +1027,15 @@ class MainApplication:
         entry_target.pack(fill=tk.X, ipady=5)
         entry_target.insert(0, self.config.get('download_path', '/railway-efs/000-tfds/'))
         
-        # 按钮
         btn_frame = tk.Frame(dialog, bg='white', pady=30)
         btn_frame.pack()
         
         def on_submit():
             path = entry_path.get().strip()
             target = entry_target.get().strip()
-            
             if not path:
                 messagebox.showwarning("提示", "请输入OBS文件路径")
                 return
-            
             self.start_download(path, target)
             dialog.destroy()
         
@@ -1129,18 +1116,15 @@ class MainApplication:
     
     def update_task_list(self, tasks):
         """更新任务列表显示"""
-        # 清空现有列表
         for widget in self.task_list_frame.winfo_children():
             widget.destroy()
         
         if not tasks:
-            # 显示空状态
             empty = tk.Label(self.task_list_frame, text="暂无任务",
                            font=('微软雅黑', 14), bg='white', fg='#999999')
             empty.pack(pady=50)
             return
         
-        # 按状态排序：运行中 > 待处理 > 暂停 > 其他
         status_order = {'running': 0, 'pending': 1, 'paused': 2}
         sorted_tasks = sorted(
             tasks.items(),
@@ -1156,12 +1140,10 @@ class MainApplication:
         item_frame.pack(fill=tk.X, pady=2)
         item_frame.pack_propagate(False)
         
-        # 任务名称
         name = task.get('object_key', '未知文件').split('/')[-1]
         tk.Label(item_frame, text=name, font=('微软雅黑', 11),
                 bg='white', fg='#333333', anchor='w').place(x=20, y=18, width=280)
         
-        # 状态
         status = task.get('status', 'unknown')
         status_text, status_color = self.get_status_info(status)
         status_label = tk.Label(item_frame, text=status_text,
@@ -1170,12 +1152,10 @@ class MainApplication:
                                padx=8, pady=2)
         status_label.place(x=320, y=16)
         
-        # 进度
         progress = task.get('progress', {})
         pct = progress.get('percentage', 0)
         progress_text = f"{pct:.1f}%"
         
-        # 进度条
         progress_frame = tk.Frame(item_frame, bg='#f5f5f5', width=100, height=8)
         progress_frame.place(x=460, y=22)
         progress_fill = tk.Frame(progress_frame, bg='#1890ff',
@@ -1185,89 +1165,53 @@ class MainApplication:
         tk.Label(item_frame, text=progress_text, font=('微软雅黑', 9),
                 bg='white', fg='#666666').place(x=570, y=18)
         
-        # 大小
         size = self.format_size(task.get('total_size', 0))
         tk.Label(item_frame, text=size, font=('微软雅黑', 10),
-                bg='white', fg='#666666').place(x=660, y=18)
+                bg='white', fg='#666666').place(x=650, y=18)
         
-        # 创建者
-        creator = task.get('created_by', '未知')
+        creator = task.get('created_by', '-')
         tk.Label(item_frame, text=creator, font=('微软雅黑', 10),
-                bg='white', fg='#666666').place(x=780, y=18)
+                bg='white', fg='#666666').place(x=770, y=18)
         
-        # 操作按钮
         btn_frame = tk.Frame(item_frame, bg='white')
-        btn_frame.place(x=880, y=12)
+        btn_frame.place(x=870, y=12)
         
         if status == 'running':
             SecondaryButton(btn_frame, icon='⏸', text='暂停',
                            command=lambda: self.pause_task(task_id)).pack(side=tk.LEFT, padx=2)
         elif status == 'paused':
-            SecondaryButton(btn_frame, icon='▶', text='继续',
-                           command=lambda: self.resume_task(task_id)).pack(side=tk.LEFT, padx=2)
+            IconButton(btn_frame, icon='▶', text='恢复',
+                      command=lambda: self.resume_task(task_id)).pack(side=tk.LEFT, padx=2)
         
-        SecondaryButton(btn_frame, icon='✕', text='取消',
-                       command=lambda: self.cancel_task(task_id)).pack(side=tk.LEFT, padx=2)
+        SecondaryButton(btn_frame, icon='🗑', text='删除',
+                       command=lambda: self.delete_task(task_id)).pack(side=tk.LEFT, padx=2)
     
     def get_status_info(self, status):
-        """获取状态信息"""
+        """获取状态显示信息"""
         status_map = {
-            'pending': ('⏳ 等待中', '#faad14'),
-            'running': ('▶️ 下载中', '#1890ff'),
-            'paused': ('⏸️ 已暂停', '#fa8c16'),
-            'completed': ('✅ 完成', '#52c41a'),
-            'failed': ('❌ 失败', '#ff4d4f'),
-            'cancelled': ('🚫 已取消', '#999999')
+            'running': ('运行中', '#52c41a'),
+            'pending': ('等待中', '#faad14'),
+            'paused': ('已暂停', '#1890ff'),
+            'completed': ('已完成', '#52c41a'),
+            'failed': ('失败', '#ff4d4f'),
+            'cancelled': ('已取消', '#999999')
         }
-        return status_map.get(status, ('❓ 未知', '#999999'))
+        return status_map.get(status, (status, '#999999'))
     
     def update_stats(self, tasks):
         """更新统计信息"""
         running = sum(1 for t in tasks.values() if t.get('status') == 'running')
-        pending = sum(1 for t in tasks.values() if t.get('status') in ('pending', 'paused'))
+        pending = sum(1 for t in tasks.values() if t.get('status') == 'pending')
         completed = sum(1 for t in tasks.values() if t.get('status') == 'completed')
         
-        self.running_card.value_label.config(text=str(running))
-        self.pending_card.value_label.config(text=str(pending))
-        self.completed_card.value_label.config(text=str(completed))
-    
-    def pause_task(self, task_id):
-        """暂停任务"""
-        try:
-            cmd = f"python /data9/obs_tool/linux_server/cli.py pause --task_id {task_id}"
-            self.ssh.exec(cmd)
-            self.refresh_tasks()
-        except Exception as e:
-            messagebox.showerror("错误", f"暂停失败: {str(e)}")
-    
-    def resume_task(self, task_id):
-        """恢复任务"""
-        try:
-            cmd = f"python /data9/obs_tool/linux_server/cli.py resume --task_id {task_id}"
-            self.ssh.exec(cmd)
-            self.refresh_tasks()
-        except Exception as e:
-            messagebox.showerror("错误", f"恢复失败: {str(e)}")
-    
-    def cancel_task(self, task_id):
-        """取消任务"""
-        if messagebox.askyesno("确认", "确定要取消这个任务吗？"):
-            try:
-                cmd = f"python /data9/obs_tool/linux_server/cli.py cancel --task_id {task_id}"
-                self.ssh.exec(cmd)
-                self.refresh_tasks()
-            except Exception as e:
-                messagebox.showerror("错误", f"取消失败: {str(e)}")
-    
-    def start_polling(self):
-        """启动状态轮询"""
-        self.refresh_tasks()
-        self.master.after(3000, self.start_polling)  # 每3秒刷新
+        self.stat_labels['running'].value_label.config(text=str(running))
+        self.stat_labels['pending'].value_label.config(text=str(pending))
+        self.stat_labels['completed'].value_label.config(text=str(completed))
     
     def format_size(self, size):
         """格式化文件大小"""
         if not size:
-            return "0 B"
+            return "-"
         size = int(size)
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
             if size < 1024:
@@ -1275,10 +1219,46 @@ class MainApplication:
             size /= 1024
         return f"{size:.1f} PB"
     
+    def pause_task(self, task_id):
+        """暂停任务"""
+        try:
+            cmd = f"python /data9/obs_tool/linux_server/cli.py pause --task_id {task_id}"
+            out, err = self.ssh.exec(cmd)
+            if not err:
+                self.refresh_tasks()
+        except Exception as e:
+            messagebox.showerror("错误", f"暂停失败: {str(e)}")
+    
+    def resume_task(self, task_id):
+        """恢复任务"""
+        try:
+            cmd = f"python /data9/obs_tool/linux_server/cli.py resume --task_id {task_id}"
+            out, err = self.ssh.exec(cmd)
+            if not err:
+                self.refresh_tasks()
+        except Exception as e:
+            messagebox.showerror("错误", f"恢复失败: {str(e)}")
+    
+    def delete_task(self, task_id):
+        """删除任务"""
+        if messagebox.askyesno("确认", "确定要删除此任务吗？"):
+            try:
+                cmd = f"python /data9/obs_tool/linux_server/cli.py delete --task_id {task_id}"
+                out, err = self.ssh.exec(cmd)
+                if not err:
+                    self.refresh_tasks()
+            except Exception as e:
+                messagebox.showerror("错误", f"删除失败: {str(e)}")
+    
+    def start_polling(self):
+        """启动状态轮询"""
+        self.refresh_tasks()
+        self.master.after(5000, self.start_polling)
+    
     def show_history(self):
         """显示下载历史"""
         try:
-            cmd = "python /data9/obs_tool/linux_server/cli.py history --limit 20"
+            cmd = "python /data9/obs_tool/linux_server/cli.py history"
             out, err = self.ssh.exec(cmd)
             
             if err:
@@ -1292,11 +1272,9 @@ class MainApplication:
             dialog.geometry("700x500")
             dialog.configure(bg='white')
             
-            # 标题
             tk.Label(dialog, text="📋 下载历史", font=('微软雅黑', 16, 'bold'),
                     bg='white', fg='#333333').pack(pady=15)
             
-            # 历史记录列表
             text = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, font=('微软雅黑', 10))
             text.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
             
@@ -1314,7 +1292,6 @@ class MainApplication:
                         text.insert(tk.END, f"   时间: {time_str}\n")
                     text.insert(tk.END, "-" * 60 + "\n")
             
-            # 关闭按钮
             tk.Button(dialog, text="关闭", command=dialog.destroy,
                      font=('微软雅黑', 10), bg='white').pack(pady=10)
             
@@ -1328,11 +1305,9 @@ class MainApplication:
         dialog.geometry("500x400")
         dialog.configure(bg='white')
         
-        # 标题
         tk.Label(dialog, text="⭐ 收藏夹管理", font=('微软雅黑', 16, 'bold'),
                 bg='white', fg='#333333').pack(pady=15)
         
-        # 当前收藏夹列表
         list_frame = tk.Frame(dialog, bg='white')
         list_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
@@ -1340,10 +1315,8 @@ class MainApplication:
                                       selectbackground='#e6f7ff', bd=1, relief='solid')
         self.fav_listbox.pack(fill=tk.BOTH, expand=True)
         
-        # 加载收藏夹
         self.refresh_favorites_list()
         
-        # 添加新收藏夹
         add_frame = tk.Frame(dialog, bg='white')
         add_frame.pack(fill=tk.X, padx=20, pady=10)
         
@@ -1373,7 +1346,6 @@ class MainApplication:
         tk.Button(add_frame, text="添加", command=add_fav,
                  font=('微软雅黑', 10), bg='#1890ff', fg='white').pack(side=tk.LEFT, padx=10)
         
-        # 关闭按钮
         tk.Button(dialog, text="关闭", command=dialog.destroy,
                  font=('微软雅黑', 10), bg='white').pack(pady=15)
     
@@ -1395,7 +1367,6 @@ class MainApplication:
 def main():
     root = tk.Tk()
     
-    # 设置DPI感知
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
