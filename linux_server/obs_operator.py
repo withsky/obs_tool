@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """OBS operations wrapper (Linux side)."""
+import json
 import os
 from typing import List
 from collections import defaultdict
@@ -56,7 +57,35 @@ class ObsWrapper:
 
     def list_objects(self, bucket: str, prefix: str = "") -> List[dict]:
         if self.client is None:
-            raise RuntimeError("OBS client not available")
+            # 尝试从配置文件加载凭据
+            try:
+                config_path = "/data9/obs_tool/config.json"
+                if os.path.exists(config_path):
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    
+                    ak = config.get('accessKeyId') or os.environ.get('OBS_ACCESS_KEY', '')
+                    sk = config.get('secretAccessKey') or os.environ.get('OBS_SECRET_KEY', '')
+                    server = config.get('server', 'https://obs.cn-north-4.myhuaweicloud.com')
+                    
+                    if ak and sk:
+                        # 重新初始化客户端
+                        self.client = ObsClient(
+                            access_key_id=ak,
+                            secret_access_key=sk,
+                            server=server
+                        )
+                    else:
+                        # AK/SK 未配置，返回空列表并记录警告
+                        return []
+            except Exception:
+                pass
+        
+        if self.client is None:
+            # OBS 客户端仍然不可用
+            return []
+            # 返回空列表而不是抛出异常
+            return []
         try:
             resp = self.client.listObjects(bucket, prefix=prefix)  # type: ignore
             objs = []

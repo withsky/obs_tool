@@ -519,13 +519,52 @@ class FileBrowserDialog:
                 messagebox.showerror("错误", f"加载文件列表失败:\n{err}")
                 return
             
-            self.files_data = json.loads(out)
-            self.display_files(self.files_data)
+            try:
+                self.files_data = json.loads(out)
+            except json.JSONDecodeError:
+                self.files_data = []
+            
+            # 如果文件列表为空，显示提示
+            if not self.files_data:
+                self.display_no_files_hint()
+            else:
+                self.display_files(self.files_data)
             
         except Exception as e:
             messagebox.showerror("错误", f"加载失败: {str(e)}")
         finally:
             self.refresh_btn.config(text='🔄 刷新', state='normal')
+    
+    def display_no_files_hint(self):
+        """显示空列表提示（包含帮助信息）"""
+        for widget in self.files_frame.winfo_children():
+            widget.destroy()
+        
+        self.file_items = []
+        
+        empty_frame = tk.Frame(self.files_frame, bg='white')
+        empty_frame.pack(fill=tk.BOTH, expand=True, pady=50)
+        
+        tk.Label(empty_frame, text="☁️", font=('Segoe UI Emoji', 48),
+                bg='white', fg='#d9d9d9').pack()
+        tk.Label(empty_frame, text="无法获取OBS文件列表", 
+                font=('微软雅黑', 14, 'bold'), bg='white', fg='#ff4d4f').pack(pady=(10, 5))
+        tk.Label(empty_frame, text="请检查服务器配置：", 
+                font=('微软雅黑', 11), bg='white', fg='#666666').pack()
+        
+        help_frame = tk.Frame(empty_frame, bg='#fafafa', padx=20, pady=10)
+        help_frame.pack(pady=10)
+        
+        help_text = """1. 确认 config.json 中已配置 AK/SK
+2. 确认已安装 obs-python-sdk:
+   pip install obs-python-sdk
+3. 检查服务器能否访问 OBS 服务"""
+        
+        tk.Label(help_frame, text=help_text, font=('微软雅黑', 10),
+                bg='#fafafa', fg='#666666', justify='left').pack()
+        
+        tk.Label(empty_frame, text="如需帮助，请联系系统管理员", 
+                font=('微软雅黑', 10), bg='white', fg='#999999').pack(pady=10)
     
     def display_files(self, files):
         """显示文件列表"""
