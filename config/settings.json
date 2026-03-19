@@ -1,0 +1,7 @@
+{
+  "ssh_host": "10.155.106.228",
+  "ssh_user": "dl",
+  "ssh_password": "tfds#2025",
+  "linux_path": "/data9/obs_tool/linux_server",
+  "download_path": "/railway-efs/000-tfds/"
+}
