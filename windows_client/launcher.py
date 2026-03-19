@@ -38,20 +38,13 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config",
 
 def load_config():
     """加载本地配置"""
-    try:
-        if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"加载配置失败: {e}")
-    
-    # 默认配置
+
     return {
-        "ssh_host": "10.155.106.228",
-        "ssh_user": "dl",
-        "ssh_password": "tfds#2025",
-        "linux_path": "/data9/obs_tool/linux_server",
-        "download_path": "/railway-efs/000-tfds/"
+        "ssh_host": "192.168.2.3",
+        "ssh_user": "wangxinchao",
+        "ssh_password": "oyxj0421",
+        "linux_path": "/Users/wangxinchao/PycharmProjects/obs_tool",
+        "download_path": "/Users/wangxinchao/testdownload"
     }
 
 def save_config(config):
@@ -84,6 +77,7 @@ class SSHClient:
         if self._client is None:
             self._client = paramiko.SSHClient()
             self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            print(self.host, self.user, self.password)
             self._client.connect(
                 self.host, 
                 username=self.user, 
@@ -512,6 +506,13 @@ class FileBrowserDialog:
         """加载收藏夹"""
         try:
             cmd = f"python {self.config.get('linux_path')}/cli.py favorites"
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                f"python {self.config.get('linux_path')}/cli.py favorites",
+            ]
+            cmd = ';'.join(cmd)
+            print(cmd)
             out, err = self.ssh.exec(cmd)
             if not err:
                 favorites = json.loads(out)
@@ -537,22 +538,38 @@ class FileBrowserDialog:
             self.refresh_btn.config(text='🔄 加载中...', state='disabled')
             self.dialog.update()
             
-            cmd = f"python {self.config.get('linux_path')}/cli.py list-obs --bucket tfds-ht --prefix '{path}' --current-level"
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py list-obs --bucket tfds --prefix '{path}' --current-level",
+            ]
+            cmd = ';'.join(cmd)
+            
+            print(f"[DEBUG] 执行命令: {cmd}")
             out, err = self.ssh.exec(cmd)
+            print(f"[DEBUG] 命令返回 err: {err}")
+            print(f"[DEBUG] 命令返回 out 前100字符: {out[:100] if out else 'None'}")
+            print(f"[DEBUG] out 长度: {len(out) if out else 0}")
             
             if err:
                 messagebox.showerror("错误", f"加载文件列表失败:\n{err}")
                 return
             
             try:
-                data = json.loads(out)
+                lines = out.strip().split('\n')
+                json_line = lines[-1].strip()
+                print(f"[DEBUG] 解析的JSON行: {json_line[:100]}...")
+                data = json.loads(json_line)
                 self.folders = data.get('folders', [])
                 self.files = data.get('files', [])
-            except json.JSONDecodeError:
+                print(f"[DEBUG] folders: {self.folders}")
+                print(f"[DEBUG] files: {self.files}")
+            except json.JSONDecodeError as e:
+                print(f"[DEBUG] JSON解析失败: {e}")
+                print(f"[DEBUG] raw out: {out}")
                 self.folders = []
                 self.files = []
             
-            # 更新界面
             self.current_path = path
             self.address_var.set(path if path else "根目录")
             self.update_breadcrumb()
@@ -560,73 +577,101 @@ class FileBrowserDialog:
             self.update_back_button()
             
         except Exception as e:
+            print(f"[DEBUG] 加载异常: {e}")
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("错误", f"加载失败: {str(e)}")
         finally:
             self.refresh_btn.config(text='🔄 刷新', state='normal')
     
     def display_current_level(self):
-        """显示当前层级的文件和文件夹"""
-        # 清空现有列表
+        """显示当前层级的文件和文件夹（详细信息模式）"""
         for widget in self.files_frame.winfo_children():
             widget.destroy()
         
         self.file_items = []
         
-        # 显示文件夹
-        for folder in self.folders:
-            self.create_folder_item(folder)
-        
-        # 显示文件
-        for file_info in self.files:
-            self.create_file_item(file_info)
-        
-        # 空状态
-        if not self.folders and not self.files:
+        total_items = len(self.folders) + len(self.files)
+        if total_items == 0:
             empty_frame = tk.Frame(self.files_frame, bg='white')
             empty_frame.pack(fill=tk.BOTH, expand=True, pady=100)
-            
-            tk.Label(empty_frame, text="📂", font=('Segoe UI Emoji', 64),
-                    bg='white', fg='#d9d9d9').pack()
-            tk.Label(empty_frame, text="此文件夹为空", font=('微软雅黑', 14),
-                    bg='white', fg='#999999').pack(pady=10)
-    
-    def create_folder_item(self, folder):
-        """创建文件夹项"""
-        name = folder.get('name', '')
-        key = folder.get('key', '')
-        modified = self.format_time(folder.get('last_modified', 0))
+            tk.Label(empty_frame, text="📂 此文件夹为空", font=('微软雅黑', 14),
+                    bg='white', fg='#999999').pack()
+            return
         
-        item = FileItem(
-            self.files_frame,
-            name=name,
-            size="",
-            modified=modified,
-            is_folder=True,
-            on_click=self.on_folder_click,
-            on_double_click=self.on_folder_double_click
-        )
-        item.pack(fill=tk.X, padx=5, pady=2)
-        item.file_info = {'key': key, 'is_folder': True, 'name': name}
-        self.file_items.append(item)
+        for folder in self.folders:
+            self.create_list_item(folder, is_folder=True)
+        for file_info in self.files:
+            self.create_list_item(file_info, is_folder=False)
     
-    def create_file_item(self, file_info):
-        """创建文件项"""
-        name = file_info.get('name', '')
-        size = self.format_size(file_info.get('size', 0))
-        modified = self.format_time(file_info.get('last_modified', 0))
+    def create_list_item(self, item_data, is_folder):
+        """创建列表项（详细信息模式）"""
+        name = item_data.get('name', '')
+        key = item_data.get('key', '')
         
-        item = FileItem(
-            self.files_frame,
-            name=name,
-            size=size,
-            modified=modified,
-            is_folder=False,
-            on_click=self.on_file_click,
-            on_double_click=self.on_file_double_click
-        )
-        item.pack(fill=tk.X, padx=5, pady=2)
-        item.file_info = file_info
-        self.file_items.append(item)
+        if is_folder:
+            size = '-'
+            icon = '📁'
+        else:
+            size = self.format_size(item_data.get('size', 0))
+            icon = self.get_file_icon(name)
+        
+        modified = self.format_time(item_data.get('last_modified', 0))
+        
+        item_frame = tk.Frame(self.files_frame, bg='white', height=30)
+        item_frame.pack(fill=tk.X, padx=5, pady=1)
+        item_frame.pack_propagate(False)
+        
+        tk.Label(item_frame, text=icon, font=('Segoe UI Emoji', 12), 
+                bg='white', width=4, anchor='e').pack(side=tk.LEFT)
+        
+        tk.Label(item_frame, text=name, font=('微软雅黑', 10), 
+                bg='white', fg='#333333', anchor='w').pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        tk.Label(item_frame, text=size, font=('微软雅黑', 10), 
+                bg='white', fg='#666666', width=15, anchor='e').pack(side=tk.RIGHT)
+        
+        tk.Label(item_frame, text=modified, font=('微软雅黑', 10), 
+                bg='white', fg='#666666', width=15, anchor='e').pack(side=tk.RIGHT)
+        
+        item_frame.bind('<Button-1>', lambda e: self.on_item_click(item_data, is_folder, item_frame))
+        for child in item_frame.winfo_children():
+            child.bind('<Button-1>', lambda e: self.on_item_click(item_data, is_folder, item_frame))
+    
+    def get_file_icon(self, filename):
+        """根据文件类型返回图标"""
+        ext = filename.lower().split('.')[-1] if '.' in filename else ''
+        icon_map = {
+            'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️',
+            'mp4': '🎬', 'avi': '🎬', 'mkv': '🎬',
+            'mp3': '🎵', 'wav': '🎵', 'flac': '🎵',
+            'zip': '📦', 'rar': '📦', '7z': '📦',
+            'txt': '📝', 'md': '📝', 'doc': '📝', 'docx': '📝',
+            'xls': '📊', 'xlsx': '📊', 'csv': '📊',
+            'pdf': '📕',
+            'py': '🐍', 'js': '📜', 'java': '☕', 'cpp': '⚙️',
+        }
+        return icon_map.get(ext, '📄')
+    
+    def on_item_click(self, item_data, is_folder, item_frame):
+        """列表项点击"""
+        for widget in self.files_frame.winfo_children():
+            widget.configure(bg='white')
+            for child in widget.winfo_children():
+                child.configure(bg='white')
+        item_frame.configure(bg='#e6f7ff')
+        for child in item_frame.winfo_children():
+            child.configure(bg='#e6f7ff')
+        
+        self.selected_files = [item_data]
+        if is_folder:
+            self.selection_label.config(text=f"已选择文件夹: {item_data.get('name', '')}")
+            self.download_btn.config(state='disabled')
+            self.sync_btn.config(state='normal')
+        else:
+            self.selection_label.config(text=f"已选择: {item_data.get('name', '')}")
+            self.download_btn.config(state='normal')
+            self.sync_btn.config(state='disabled')
     
     def format_size(self, size):
         """格式化文件大小"""
@@ -705,10 +750,10 @@ class FileBrowserDialog:
         """根据地址栏输入导航"""
         path = self.address_var.get().strip()
         if path == "根目录":
-            path = ""
+            path = "01-tfds-data"
         
-        if path and not path.startswith('/'):
-            path = '/' + path
+        # if path and not path.startswith('/'):
+        #     path = '/' + path
         
         self.navigate_to(path)
     
@@ -754,6 +799,7 @@ class FileBrowserDialog:
     def download_selected(self):
         """下载选中的文件"""
         if not self.selected_files:
+            messagebox.showwarning("提示", "请先选择一个文件")
             return
         
         file_info = self.selected_files[0]
@@ -762,11 +808,12 @@ class FileBrowserDialog:
         target = askstring(
             "确认下载",
             f"文件: {key}\n\n请输入下载到Linux服务器的目标路径:",
+            parent=self.dialog,
             initialvalue=self.config.get('download_path', '/railway-efs/000-tfds/')
         )
         
         if target:
-            self.parent.start_download(key, target)
+            self.start_download(key, target)
             self.dialog.destroy()
     
     def apply_time_filter(self):
@@ -802,15 +849,18 @@ class FileBrowserDialog:
         
         if messagebox.askyesno("确认同步", msg):
             target = self.config.get('download_path', '/railway-efs/000-tfds/')
-            self.parent.sync_folder(folder_path, target, date_str)
+            self.sync_folder(folder_path, target, date_str)
             self.dialog.destroy()
     
     def start_download(self, object_key, target_dir):
         """开始下载"""
         try:
-            cmd = (f"python /data9/obs_tool/linux_server/cli.py download "
-                  f"--object_key '{object_key}' --target_dir '{target_dir}' "
-                  f"--created_by 'windows_user'")
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py download --object_key '{object_key}' --target_dir '{target_dir}' --created_by 'windows_user'",
+            ]
+            cmd = ';'.join(cmd)
             out, err = self.ssh.exec(cmd)
             
             if err:
@@ -819,11 +869,44 @@ class FileBrowserDialog:
                 result = json.loads(out)
                 task_id = result.get('task_id')
                 messagebox.showinfo("成功", f"✅ 任务已创建\n任务ID: {task_id}")
-                self.parent.refresh_tasks()
+                self.refresh_tasks()
                 
         except Exception as e:
             messagebox.showerror("错误", f"操作失败: {str(e)}")
     
+    def sync_folder(self, folder_path, target_dir, date_filter=None):
+        """同步文件夹"""
+        try:
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py sync-folder --bucket tfds --prefix '{folder_path}/' --target-dir '{target_dir}'",
+            ]
+            if date_filter:
+                try:
+                    filter_ts = int(datetime.strptime(date_filter, '%Y-%m-%d').timestamp())
+                    cmd.append(f"--after {filter_ts}")
+                except:
+                    pass
+            
+            cmd_str = ';'.join(cmd)
+            out, err = self.ssh.exec(cmd_str)
+            
+            if err:
+                messagebox.showerror("错误", f"启动同步失败:\n{err}")
+            else:
+                result = json.loads(out)
+                task_count = len(result.get('tasks', []))
+                messagebox.showinfo("成功", f"✅ 同步任务已创建\n共 {task_count} 个文件")
+                self.refresh_tasks()
+                
+        except Exception as e:
+            messagebox.showerror("错误", f"操作失败: {str(e)}")
+    
+    def refresh_tasks(self):
+        """刷新任务列表"""
+        pass
+
 
 class MainApplication:
     """主应用程序"""
@@ -944,6 +1027,7 @@ class MainApplication:
                               bg='#f6ffed', fg=color)
         value_label.pack(anchor='w', pady=(5, 0))
         
+        card.value_label = value_label
         return card
     
     def create_task_list(self, parent):
@@ -1054,9 +1138,12 @@ class MainApplication:
     def start_download(self, object_key, target_dir):
         """开始下载"""
         try:
-            cmd = (f"python /data9/obs_tool/linux_server/cli.py download "
-                  f"--object_key '{object_key}' --target_dir '{target_dir}' "
-                  f"--created_by 'windows_user'")
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py download --object_key '{object_key}' --target_dir '{target_dir}' --created_by 'windows_user'",
+            ]
+            cmd = ';'.join(cmd)
             out, err = self.ssh.exec(cmd)
             
             if err:
@@ -1073,18 +1160,21 @@ class MainApplication:
     def sync_folder(self, folder_path, target_dir, date_filter=None):
         """同步文件夹"""
         try:
-            cmd = (f"python /data9/obs_tool/linux_server/cli.py sync-folder "
-                  f"--bucket tfds-ht --prefix '{folder_path}/' "
-                  f"--target-dir '{target_dir}'")
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py sync-folder --bucket tfds --prefix '{folder_path}/' --target-dir '{target_dir}'",
+            ]
             
             if date_filter:
                 try:
                     filter_ts = int(datetime.strptime(date_filter, '%Y-%m-%d').timestamp())
-                    cmd += f" --after {filter_ts}"
+                    cmd.append(f"--after {filter_ts}")
                 except:
                     pass
             
-            out, err = self.ssh.exec(cmd)
+            cmd_str = ';'.join(cmd)
+            out, err = self.ssh.exec(cmd_str)
             
             if err:
                 messagebox.showerror("错误", f"启动同步失败:\n{err}")
@@ -1100,7 +1190,13 @@ class MainApplication:
     def refresh_tasks(self):
         """刷新任务列表"""
         try:
-            cmd = "python /data9/obs_tool/linux_server/cli.py list"
+            cmd = "python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py list"
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                "python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py list",
+            ]
+            cmd = ';'.join(cmd)
             out, err = self.ssh.exec(cmd)
             
             if err:
@@ -1222,7 +1318,12 @@ class MainApplication:
     def pause_task(self, task_id):
         """暂停任务"""
         try:
-            cmd = f"python /data9/obs_tool/linux_server/cli.py pause --task_id {task_id}"
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py pause --task_id {task_id}",
+            ]
+            cmd = ';'.join(cmd)
             out, err = self.ssh.exec(cmd)
             if not err:
                 self.refresh_tasks()
@@ -1232,7 +1333,12 @@ class MainApplication:
     def resume_task(self, task_id):
         """恢复任务"""
         try:
-            cmd = f"python /data9/obs_tool/linux_server/cli.py resume --task_id {task_id}"
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py resume --task_id {task_id}",
+            ]
+            cmd = ';'.join(cmd)
             out, err = self.ssh.exec(cmd)
             if not err:
                 self.refresh_tasks()
@@ -1243,7 +1349,12 @@ class MainApplication:
         """删除任务"""
         if messagebox.askyesno("确认", "确定要删除此任务吗？"):
             try:
-                cmd = f"python /data9/obs_tool/linux_server/cli.py delete --task_id {task_id}"
+                cmd = [
+                    'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                    'source /opt/anaconda3/bin/activate base',
+                    f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py delete --task_id {task_id}",
+                ]
+                cmd = ';'.join(cmd)
                 out, err = self.ssh.exec(cmd)
                 if not err:
                     self.refresh_tasks()
@@ -1258,7 +1369,12 @@ class MainApplication:
     def show_history(self):
         """显示下载历史"""
         try:
-            cmd = "python /data9/obs_tool/linux_server/cli.py history"
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                "python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py history",
+            ]
+            cmd = ';'.join(cmd)
             out, err = self.ssh.exec(cmd)
             
             if err:
@@ -1333,7 +1449,12 @@ class MainApplication:
             path = path_entry.get().strip()
             if name and path:
                 try:
-                    cmd = f"python /data9/obs_tool/linux_server/cli.py favorites --action add --name '{name}' --path '{path}'"
+                    cmd = [
+                        'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                        'source /opt/anaconda3/bin/activate base',
+                        f"python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py favorites --action add --name '{name}' --path '{path}'",
+                    ]
+                    cmd = ';'.join(cmd)
                     self.ssh.exec(cmd)
                     self.refresh_favorites_list()
                     name_entry.delete(0, tk.END)
@@ -1353,7 +1474,12 @@ class MainApplication:
         """刷新收藏夹列表"""
         self.fav_listbox.delete(0, tk.END)
         try:
-            cmd = "python /data9/obs_tool/linux_server/cli.py favorites"
+            cmd = [
+                'cd "/Users/wangxinchao/PycharmProjects/obs_tool" ',
+                'source /opt/anaconda3/bin/activate base',
+                "python /Users/wangxinchao/PycharmProjects/obs_tool/linux_server/cli.py favorites",
+            ]
+            cmd = ';'.join(cmd)
             out, err = self.ssh.exec(cmd)
             if not err:
                 favorites = json.loads(out)

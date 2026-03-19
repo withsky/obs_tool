@@ -72,8 +72,4 @@ if errorlevel 1 (
     echo 可能的解决方案：
     echo 1. 检查网络连接是否正常
     echo 2. 确认能访问服务器 10.155.106.228
-    echo 3. 检查config\settings.json中的密码是否正确
-    echo 4. 联系系统管理员
-    echo.
-    pause
-)
+    echo 3. 检查config\settings.json中的�
